@@ -285,13 +285,47 @@ interface KalshiMarket {
   ticker: string;
   event_ticker: string;
   title: string;
+  yes_sub_title?: string;
   last_price_dollars?: string;
   previous_price_dollars?: string;
   yes_bid_dollars?: string;
   yes_ask_dollars?: string;
   volume_24h_fp?: string;
+  liquidity_dollars?: string;
   close_time?: string;
+  status?: string;
   custom_strike?: Record<string, unknown>;
+}
+
+interface KalshiEvent {
+  event_ticker: string;
+  series_ticker: string;
+  category?: string;
+  title: string;
+  markets?: KalshiMarket[];
+}
+
+// Kalshi's own event `category` field maps directly onto our buckets —
+// no keyword-guessing needed for Kalshi content.
+const KALSHI_CATEGORY_MAP: Record<string, Category> = {
+  Elections: "Politics",
+  Politics: "Politics",
+  World: "Other",
+  Sports: "Sports",
+  Financials: "Crypto & Business",
+  Economics: "Crypto & Business",
+  Companies: "Crypto & Business",
+  Entertainment: "Entertainment & Culture",
+  Social: "Entertainment & Culture",
+  "Climate and Weather": "Weather & Science",
+  "Science and Technology": "Weather & Science",
+  Health: "Weather & Science",
+  Transportation: "Other",
+};
+
+function classifyKalshiCategory(rawCategory: string | undefined): Category {
+  if (!rawCategory) return "Other";
+  return KALSHI_CATEGORY_MAP[rawCategory] ?? "Other";
 }
 
 function isComboMarket(m: KalshiMarket): boolean {
@@ -303,15 +337,15 @@ function isComboMarket(m: KalshiMarket): boolean {
 }
 
 async function fetchKalshi(): Promise<MarketMove[]> {
-  const baseUrl = "https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&status=open";
+  // The events endpoint (with nested markets + a proper category field) returns
+  // clean single-question markets, unlike the generic /markets listing which is
+  // currently saturated with auto-generated multivariate (MVE) combo bundles.
+  const baseUrl =
+    "https://api.elections.kalshi.com/trade-api/v2/events?limit=200&status=open&with_nested_markets=true";
   const moves: MarketMove[] = [];
 
-  // The default open-markets feed can be heavily dominated by multivariate (MVE)
-  // combo bundles depending on what's live. Page through a handful of cursors
-  // (same base query/filters) to maximize the chance of surfacing clean,
-  // single-question markets without changing the documented request shape.
   let cursor: string | undefined;
-  const MAX_PAGES = 8;
+  const MAX_PAGES = 3;
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const url = cursor ? `${baseUrl}&cursor=${encodeURIComponent(cursor)}` : baseUrl;
@@ -320,59 +354,70 @@ async function fetchKalshi(): Promise<MarketMove[]> {
       if (page === 0) throw new Error(`Kalshi fetch failed: ${res.status}`);
       break;
     }
-    const data: { markets: KalshiMarket[]; cursor?: string } = await res.json();
+    const data: { events: KalshiEvent[]; cursor?: string } = await res.json();
 
-    for (const m of data.markets ?? []) {
-      try {
-        if (isComboMarket(m)) continue;
+    for (const event of data.events ?? []) {
+      const category = classifyKalshiCategory(event.category);
 
-        const last = parseFloat(m.last_price_dollars ?? "");
-        const prev = parseFloat(m.previous_price_dollars ?? "");
-        if (Number.isNaN(last) || Number.isNaN(prev)) continue;
+      for (const m of event.markets ?? []) {
+        try {
+          if (m.status !== "active") continue;
+          if (isComboMarket(m)) continue;
 
-        const changePct = (last - prev) * 100;
-        if (changePct === 0) continue;
+          const last = parseFloat(m.last_price_dollars ?? "");
+          const prev = parseFloat(m.previous_price_dollars ?? "");
+          if (Number.isNaN(last) || Number.isNaN(prev)) continue;
 
-        const currentProbability = last * 100;
-        const direction: "up" | "down" = changePct >= 0 ? "up" : "down";
-        const volume = parseFloat(m.volume_24h_fp ?? "0") || 0;
+          const changePct = (last - prev) * 100;
+          if (changePct === 0) continue;
 
-        const body = templatedBody({
-          platform: "kalshi",
-          title: m.title,
-          currentProbability,
-          changePct,
-          direction,
-          volume,
-          endDate: m.close_time,
-          window: "latest tick",
-        });
+          const volume = parseFloat(m.volume_24h_fp ?? "0") || 0;
+          const liquidity = parseFloat(m.liquidity_dollars ?? "0") || 0;
+          // Skip dead/illiquid markets so headlines reflect real repricing.
+          if (volume <= 0 && liquidity <= 0) continue;
 
-        moves.push({
-          id: `kx-${m.ticker}`,
-          platform: "kalshi",
-          title: m.title,
-          headline: buildHeadline(m.title, currentProbability, changePct, direction, "latest tick"),
-          category: classifyCategory(m.title),
-          currentProbability,
-          changePct,
-          direction,
-          window: "latest tick",
-          volume,
-          url: `https://kalshi.com/markets/${m.event_ticker}`,
-          image: null,
-          body,
-          endDate: m.close_time || null,
-          updatedAt: new Date().toISOString(),
-        });
-      } catch {
-        continue;
+          const currentProbability = last * 100;
+          const direction: "up" | "down" = changePct >= 0 ? "up" : "down";
+          const title = m.title || event.title;
+
+          const body = templatedBody({
+            platform: "kalshi",
+            title,
+            currentProbability,
+            changePct,
+            direction,
+            volume,
+            liquidity,
+            endDate: m.close_time,
+            window: "latest tick",
+          });
+
+          moves.push({
+            id: `kx-${m.ticker}`,
+            platform: "kalshi",
+            title,
+            headline: buildHeadline(title, currentProbability, changePct, direction, "latest tick"),
+            category,
+            currentProbability,
+            changePct,
+            direction,
+            window: "latest tick",
+            volume,
+            liquidity,
+            url: `https://kalshi.com/markets/${event.series_ticker}/${event.event_ticker}`,
+            image: null,
+            body,
+            endDate: m.close_time || null,
+            updatedAt: new Date().toISOString(),
+          });
+        } catch {
+          continue;
+        }
       }
     }
 
     cursor = data.cursor;
-    // Stop early once we have a healthy pool of clean markets.
-    if (!cursor || moves.length >= 150) break;
+    if (!cursor || moves.length >= 200) break;
   }
 
   return moves;
