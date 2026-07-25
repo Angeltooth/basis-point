@@ -93,6 +93,18 @@ export type MoversResponse = z.infer<typeof moversResponseSchema>;
 
 // ---- Market price history (for the detail-panel chart) ----
 
+export const HISTORY_RANGES = ["1h", "6h", "1d", "1w", "1m", "all"] as const;
+export type HistoryRange = (typeof HISTORY_RANGES)[number];
+
+export const HISTORY_RANGE_LABELS: Record<HistoryRange, string> = {
+  "1h": "1H",
+  "6h": "6H",
+  "1d": "1D",
+  "1w": "1W",
+  "1m": "1M",
+  all: "ALL",
+};
+
 export const historyPointSchema = z.object({
   timestamp: z.string(), // ISO
   probability: z.number(), // 0-100

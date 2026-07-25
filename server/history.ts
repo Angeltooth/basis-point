@@ -1,4 +1,4 @@
-import type { HistoryPoint, MarketHistoryResponse } from "@shared/schema";
+import type { HistoryPoint, HistoryRange, MarketHistoryResponse } from "@shared/schema";
 
 // ---------------------------------------------------------------------------
 // Market price history (for the detail-panel chart)
@@ -37,7 +37,31 @@ import type { HistoryPoint, MarketHistoryResponse } from "@shared/schema";
 // for the exact curl command to check each one.
 // ---------------------------------------------------------------------------
 
-const HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // last 7 days
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+// Per-range window length and candle granularity. Kalshi's period_interval
+// is restricted by its API to exactly {1, 60, 1440} minutes — no arbitrary
+// values — so ranges are bucketed into whichever of those three makes sense
+// rather than scaled continuously. Polymarket's fidelity (minutes) has no
+// such restriction, so it's scaled more finely per range. "all" has no
+// fixed window: Polymarket supports a literal interval=max shortcut (skips
+// startTs/endTs/fidelity entirely); Kalshi has no equivalent "everything"
+// shortcut in its documented API, so it falls back to a generously wide
+// window instead; Manifold just skips the cutoff filter entirely.
+const RANGE_CONFIG: Record<
+  HistoryRange,
+  { windowMs: number | null; kalshiPeriodInterval: 1 | 60 | 1440; polymarketFidelity: number }
+> = {
+  "1h": { windowMs: HOUR_MS, kalshiPeriodInterval: 1, polymarketFidelity: 1 },
+  "6h": { windowMs: 6 * HOUR_MS, kalshiPeriodInterval: 1, polymarketFidelity: 5 },
+  "1d": { windowMs: DAY_MS, kalshiPeriodInterval: 60, polymarketFidelity: 10 },
+  "1w": { windowMs: 7 * DAY_MS, kalshiPeriodInterval: 60, polymarketFidelity: 60 },
+  "1m": { windowMs: 30 * DAY_MS, kalshiPeriodInterval: 1440, polymarketFidelity: 360 },
+  all: { windowMs: null, kalshiPeriodInterval: 1440, polymarketFidelity: 1440 },
+};
+
+const KALSHI_ALL_FALLBACK_MS = 3 * 365 * DAY_MS; // no "everything" shortcut documented for Kalshi's candlesticks endpoint, so "all" uses a generously wide window instead
 
 // ---------------- Polymarket ----------------
 
@@ -45,7 +69,7 @@ interface PolymarketMarketDetail {
   clobTokenIds?: string; // stringified JSON array, same convention as outcomes/outcomePrices elsewhere in this app
 }
 
-async function fetchPolymarketHistory(rawId: string): Promise<HistoryPoint[]> {
+async function fetchPolymarketHistory(rawId: string, range: HistoryRange): Promise<HistoryPoint[]> {
   // Verify: curl "https://gamma-api.polymarket.com/markets/<rawId>" | python3 -m json.tool
   const marketRes = await fetch(`https://gamma-api.polymarket.com/markets/${encodeURIComponent(rawId)}`, {
     headers: { Accept: "application/json" },
@@ -62,13 +86,21 @@ async function fetchPolymarketHistory(rawId: string): Promise<HistoryPoint[]> {
   const yesTokenId = tokenIds[0];
   if (!yesTokenId) return [];
 
-  const endTs = Math.floor(Date.now() / 1000);
-  const startTs = endTs - Math.floor(HISTORY_WINDOW_MS / 1000);
+  const config = RANGE_CONFIG[range];
 
-  // Verify: curl "https://clob.polymarket.com/prices-history?market=<yesTokenId>&startTs=<startTs>&endTs=<endTs>&fidelity=60"
-  const historyUrl = `https://clob.polymarket.com/prices-history?market=${encodeURIComponent(
-    yesTokenId
-  )}&startTs=${startTs}&endTs=${endTs}&fidelity=60`;
+  // Verify: curl "https://clob.polymarket.com/prices-history?market=<yesTokenId>&interval=max"
+  // or, for a bounded range: curl "...&startTs=<startTs>&endTs=<endTs>&fidelity=60"
+  let historyUrl: string;
+  if (config.windowMs === null) {
+    historyUrl = `https://clob.polymarket.com/prices-history?market=${encodeURIComponent(yesTokenId)}&interval=max`;
+  } else {
+    const endTs = Math.floor(Date.now() / 1000);
+    const startTs = endTs - Math.floor(config.windowMs / 1000);
+    historyUrl = `https://clob.polymarket.com/prices-history?market=${encodeURIComponent(
+      yesTokenId
+    )}&startTs=${startTs}&endTs=${endTs}&fidelity=${config.polymarketFidelity}`;
+  }
+
   const historyRes = await fetch(historyUrl, { headers: { Accept: "application/json" } });
   if (!historyRes.ok) return [];
   const raw = await historyRes.json();
@@ -112,17 +144,25 @@ function parseKalshiSeriesTicker(url: string): string | null {
   return match ? match[1] : null;
 }
 
-async function fetchKalshiHistory(rawTicker: string, url: string | undefined): Promise<HistoryPoint[]> {
+async function fetchKalshiHistory(
+  rawTicker: string,
+  url: string | undefined,
+  range: HistoryRange
+): Promise<HistoryPoint[]> {
   const seriesTicker = url ? parseKalshiSeriesTicker(url) : null;
   if (!seriesTicker) return [];
 
+  const config = RANGE_CONFIG[range];
+  const windowMs = config.windowMs ?? KALSHI_ALL_FALLBACK_MS;
   const endTs = Math.floor(Date.now() / 1000);
-  const startTs = endTs - Math.floor(HISTORY_WINDOW_MS / 1000);
+  const startTs = endTs - Math.floor(windowMs / 1000);
 
-  // Verify: curl "https://api.elections.kalshi.com/trade-api/v2/series/<seriesTicker>/markets/<rawTicker>/candlesticks?start_ts=<startTs>&end_ts=<endTs>&period_interval=60"
+  // Verify: curl "https://api.elections.kalshi.com/trade-api/v2/series/<seriesTicker>/markets/<rawTicker>/candlesticks?start_ts=<startTs>&end_ts=<endTs>&period_interval=<periodInterval>"
   const url2 = `https://api.elections.kalshi.com/trade-api/v2/series/${encodeURIComponent(
     seriesTicker
-  )}/markets/${encodeURIComponent(rawTicker)}/candlesticks?start_ts=${startTs}&end_ts=${endTs}&period_interval=60`;
+  )}/markets/${encodeURIComponent(rawTicker)}/candlesticks?start_ts=${startTs}&end_ts=${endTs}&period_interval=${
+    config.kalshiPeriodInterval
+  }`;
   const res = await fetch(url2, { headers: { Accept: "application/json" } });
   if (!res.ok) return [];
   const data: KalshiCandlesticksResponse = await res.json();
@@ -145,7 +185,7 @@ interface ManifoldBet {
   probAfter?: number;
 }
 
-async function fetchManifoldHistory(rawId: string): Promise<HistoryPoint[]> {
+async function fetchManifoldHistory(rawId: string, range: HistoryRange): Promise<HistoryPoint[]> {
   // Verify: curl "https://api.manifold.markets/v0/bets?contractId=<rawId>&limit=1000"
   const url = `https://api.manifold.markets/v0/bets?contractId=${encodeURIComponent(rawId)}&limit=1000`;
   const res = await fetch(url, { headers: { Accept: "application/json" } });
@@ -153,7 +193,8 @@ async function fetchManifoldHistory(rawId: string): Promise<HistoryPoint[]> {
   const bets: ManifoldBet[] = await res.json();
   if (!Array.isArray(bets)) return [];
 
-  const cutoff = Date.now() - HISTORY_WINDOW_MS;
+  const config = RANGE_CONFIG[range];
+  const cutoff = config.windowMs === null ? 0 : Date.now() - config.windowMs; // "all" -> no cutoff, keep everything within the 1000-bet page limit
 
   return bets
     .filter((b) => typeof b.probAfter === "number" && b.createdTime >= cutoff)
@@ -167,24 +208,26 @@ export async function getMarketHistory(params: {
   platform: string;
   id: string;
   url?: string;
+  range?: HistoryRange;
 }): Promise<MarketHistoryResponse> {
   const { platform, id, url } = params;
+  const range: HistoryRange = params.range && params.range in RANGE_CONFIG ? params.range : "1w";
 
   if (platform === "polymarket") {
     const rawId = id.replace(/^pm-/, "");
-    const points = await fetchPolymarketHistory(rawId);
+    const points = await fetchPolymarketHistory(rawId, range);
     return { points, source: "prices-history" };
   }
 
   if (platform === "kalshi") {
     const rawTicker = id.replace(/^kx-/, "");
-    const points = await fetchKalshiHistory(rawTicker, url);
+    const points = await fetchKalshiHistory(rawTicker, url, range);
     return { points, source: "candlesticks" };
   }
 
   if (platform === "manifold") {
     const rawId = id.replace(/^mf-/, "");
-    const points = await fetchManifoldHistory(rawId);
+    const points = await fetchManifoldHistory(rawId, range);
     return { points, source: "bets" };
   }
 

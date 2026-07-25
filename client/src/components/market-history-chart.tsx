@@ -1,44 +1,80 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { MarketHistoryResponse, MarketMove } from "@shared/schema";
+import type { HistoryRange, MarketHistoryResponse, MarketMove } from "@shared/schema";
+import { HISTORY_RANGES, HISTORY_RANGE_LABELS } from "@shared/schema";
+import { cn } from "@/lib/utils";
 
 interface MarketHistoryChartProps {
   move: MarketMove;
 }
 
-function formatTick(iso: string): string {
+// Short ranges benefit from a time-of-day tick ("2:30 PM"); once the window
+// spans multiple days, a date ("Jul 22") is more useful than a repeating
+// clock time.
+function formatTick(iso: string, range: HistoryRange): string {
   const d = new Date(iso);
+  if (range === "1h" || range === "6h") {
+    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  }
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 export function MarketHistoryChart({ move }: MarketHistoryChartProps) {
+  const [range, setRange] = useState<HistoryRange>("1w");
+
   const url = `/api/history?platform=${encodeURIComponent(move.platform)}&id=${encodeURIComponent(
     move.id
-  )}&url=${encodeURIComponent(move.url)}`;
+  )}&url=${encodeURIComponent(move.url)}&range=${range}`;
 
   // Single-element queryKey so the default queryFn (which joins queryKey
   // with "/") uses this exact URL string as-is rather than trying to
   // concatenate path segments — same convention as the ["/api/movers"]
-  // query in home.tsx.
+  // query in home.tsx. Range is baked into the URL, so switching ranges
+  // naturally triggers a refetch under a new cache key.
   const { data, isLoading, isError } = useQuery<MarketHistoryResponse>({
     queryKey: [url],
   });
 
+  const rangeSelector = (
+    <div className="flex items-center gap-1 mb-2" data-testid="history-range-selector">
+      {HISTORY_RANGES.map((r) => (
+        <button
+          key={r}
+          type="button"
+          onClick={() => setRange(r)}
+          className={cn(
+            "px-1.5 py-0.5 rounded text-[11px] font-mono uppercase tracking-wide transition-colors",
+            r === range
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted"
+          )}
+          data-testid={`button-range-${r}`}
+        >
+          {HISTORY_RANGE_LABELS[r]}
+        </button>
+      ))}
+    </div>
+  );
+
   if (isLoading) {
     return (
-      <div className="h-40 flex items-center justify-center" data-testid="history-chart-loading">
-        <div className="h-32 w-full bg-muted/40 rounded-md animate-pulse" />
+      <div data-testid="history-chart-loading">
+        {rangeSelector}
+        <div className="h-40 flex items-center justify-center">
+          <div className="h-32 w-full bg-muted/40 rounded-md animate-pulse" />
+        </div>
       </div>
     );
   }
 
   if (isError || !data || data.points.length < 2) {
     return (
-      <div
-        className="h-40 flex items-center justify-center text-xs text-muted-foreground"
-        data-testid="history-chart-empty"
-      >
-        No recent price history available for this market.
+      <div data-testid="history-chart-empty">
+        {rangeSelector}
+        <div className="h-40 flex items-center justify-center text-xs text-muted-foreground">
+          No price history available for this market over this range.
+        </div>
       </div>
     );
   }
@@ -50,12 +86,13 @@ export function MarketHistoryChart({ move }: MarketHistoryChartProps) {
 
   return (
     <div data-testid="history-chart">
+      {rangeSelector}
       <div className="h-40 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: -20 }}>
             <XAxis
               dataKey="timestamp"
-              tickFormatter={formatTick}
+              tickFormatter={(v) => formatTick(v, range)}
               tick={{ fontSize: 11 }}
               stroke="hsl(var(--muted-foreground))"
               minTickGap={40}

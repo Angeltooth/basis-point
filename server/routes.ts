@@ -4,6 +4,8 @@ import type { Server } from 'node:http';
 import { storage } from "./storage";
 import { getMovers } from "./markets";
 import { getMarketHistory } from "./history";
+import type { HistoryRange } from "@shared/schema";
+import { HISTORY_RANGES } from "@shared/schema";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -27,10 +29,19 @@ export async function registerRoutes(
       const platform = req.query.platform;
       const id = req.query.id;
       const url = req.query.url;
+      const range = req.query.range;
       if (typeof platform !== "string" || typeof id !== "string") {
         return res.status(400).json({ error: "platform and id query params are required" });
       }
-      const data = await getMarketHistory({ platform, id, url: typeof url === "string" ? url : undefined });
+      const rangeParam = typeof range === "string" && (HISTORY_RANGES as readonly string[]).includes(range)
+        ? (range as HistoryRange)
+        : undefined;
+      const data = await getMarketHistory({
+        platform,
+        id,
+        url: typeof url === "string" ? url : undefined,
+        range: rangeParam,
+      });
       res.json(data);
     } catch (err) {
       console.error("Error fetching market history:", err);
