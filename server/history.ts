@@ -125,9 +125,37 @@ async function fetchPolymarketHistory(rawId: string, range: HistoryRange): Promi
 
 // ---------------- Kalshi ----------------
 
+// Field names confirmed against a real response on 2026-07-25 (see the
+// module header — this was a live bug, not a guess this time). Kalshi's
+// price fields are suffixed "_dollars" (close_dollars, mean_dollars), not
+// the bare "close"/"mean" originally assumed — every candle was silently
+// filtered out under the wrong names. Most candles for a thin market have
+// NO trade in that period at all: `price` carries only `previous_dollars`
+// (the last known trade price, carried forward) instead of open/high/low/
+// close. Before the market's very first trade, `price` can be `{}` with no
+// usable field whatsoever — for that case only, fall back to the midpoint
+// of yes_bid/yes_ask as a rough estimate rather than dropping the point.
 interface KalshiCandlestick {
   end_period_ts: number;
-  price?: { close?: string; mean?: string };
+  price?: { close_dollars?: string; mean_dollars?: string; previous_dollars?: string };
+  yes_bid?: { close_dollars?: string };
+  yes_ask?: { close_dollars?: string };
+}
+
+function extractKalshiProbability(c: KalshiCandlestick): number | null {
+  const raw = c.price?.close_dollars ?? c.price?.mean_dollars ?? c.price?.previous_dollars;
+  if (raw) {
+    const val = parseFloat(raw);
+    if (!Number.isNaN(val)) return val * 100;
+  }
+  const bidRaw = c.yes_bid?.close_dollars;
+  const askRaw = c.yes_ask?.close_dollars;
+  if (bidRaw && askRaw) {
+    const bid = parseFloat(bidRaw);
+    const ask = parseFloat(askRaw);
+    if (!Number.isNaN(bid) && !Number.isNaN(ask)) return ((bid + ask) / 2) * 100;
+  }
+  return null;
 }
 
 interface KalshiCandlesticksResponse {
@@ -169,10 +197,8 @@ async function fetchKalshiHistory(
 
   return (data.candlesticks ?? [])
     .map((c) => {
-      const close = c.price?.close ?? c.price?.mean;
-      if (!close) return null;
-      const probability = parseFloat(close) * 100;
-      if (Number.isNaN(probability)) return null;
+      const probability = extractKalshiProbability(c);
+      if (probability === null) return null;
       return { timestamp: new Date(c.end_period_ts * 1000).toISOString(), probability };
     })
     .filter((p): p is HistoryPoint => p !== null);
