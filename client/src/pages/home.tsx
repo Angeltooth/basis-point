@@ -11,9 +11,14 @@ import { SearchBar } from "@/components/search-bar";
 import { StoryCard } from "@/components/story-card";
 import { StoryCardSkeleton } from "@/components/story-card-skeleton";
 import { StoryDialog } from "@/components/story-dialog";
+import { CrossPlatformMatches, type ResolvedMatch } from "@/components/cross-platform-matches";
 import { queryClient } from "@/lib/queryClient";
 
-const REFETCH_INTERVAL_MS = 2.5 * 60 * 1000;
+// Matches the server's CACHE_TTL_MS (server/markets.ts) — polling faster
+// than the cache actually turns over just re-fetches the same cached
+// response and wastes a round trip. Keep these two values in sync if either
+// changes.
+const REFETCH_INTERVAL_MS = 3 * 60 * 1000;
 
 export default function Home() {
   const [activeCategory, setActiveCategory] = useState<Category | "All">("All");
@@ -94,6 +99,24 @@ export default function Home() {
     queryClient.invalidateQueries({ queryKey: ["/api/movers"] });
     refetch();
   };
+
+  // crossPlatformMatches only carries IDs + titles (see ./matching.ts) —
+  // full MarketMove data (probability, url, etc.) is looked up from movers,
+  // which is safe because matching runs against the exact same fetch cycle
+  // that produced movers, so every matched ID is guaranteed present. Movers
+  // missing entirely (e.g. a transient response inconsistency) are silently
+  // dropped rather than rendered with partial data.
+  const resolvedMatches = useMemo<ResolvedMatch[]>(() => {
+    if (!data?.crossPlatformMatches?.length) return [];
+    const byId = new Map(movers.map((m) => [m.id, m]));
+    const resolved: ResolvedMatch[] = [];
+    for (const match of data.crossPlatformMatches) {
+      const polymarket = byId.get(match.polymarketId);
+      const kalshi = byId.get(match.kalshiId);
+      if (polymarket && kalshi) resolved.push({ match, polymarket, kalshi });
+    }
+    return resolved.sort((a, b) => b.match.confidence - a.match.confidence);
+  }, [data?.crossPlatformMatches, movers]);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -206,6 +229,8 @@ export default function Home() {
             ))}
           </div>
         )}
+
+        {!isError && !isLoading && <CrossPlatformMatches matches={resolvedMatches} />}
       </main>
 
       <footer className="border-t border-border py-6 mt-6">
