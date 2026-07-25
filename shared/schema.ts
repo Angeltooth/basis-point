@@ -90,3 +90,20 @@ export const moversResponseSchema = z.object({
 });
 
 export type MoversResponse = z.infer<typeof moversResponseSchema>;
+
+// ---- Market price history (for the detail-panel chart) ----
+
+export const historyPointSchema = z.object({
+  timestamp: z.string(), // ISO
+  probability: z.number(), // 0-100
+});
+export type HistoryPoint = z.infer<typeof historyPointSchema>;
+
+export const marketHistoryResponseSchema = z.object({
+  points: z.array(historyPointSchema),
+  // How the series was derived — surfaced so the UI can caveat Manifold's
+  // reconstructed-from-trades chart differently from a real exchange
+  // candlestick series.
+  source: z.enum(["candlesticks", "prices-history", "bets"]),
+});
+export type MarketHistoryResponse = z.infer<typeof marketHistoryResponseSchema>;

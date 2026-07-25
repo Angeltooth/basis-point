@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { MarketHistoryChart } from "@/components/market-history-chart";
 import { formatDelta, formatMoveVolume, platformLabel, platformBadgeClass, timeAgo, windowBadgeLabel, isInstantTick } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -90,6 +91,8 @@ export function StoryDialog({ move, onOpenChange }: StoryDialogProps) {
             sustained trend.
           </p>
         )}
+
+        <MarketHistoryChart move={move} />
 
         <p className="text-base leading-relaxed text-foreground" data-testid="text-dialog-body">
           {move.body}

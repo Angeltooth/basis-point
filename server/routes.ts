@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { storage } from "./storage";
 import { getMovers } from "./markets";
+import { getMarketHistory } from "./history";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -18,6 +19,22 @@ export async function registerRoutes(
     } catch (err) {
       console.error("Error fetching movers:", err);
       res.status(500).json({ error: "Failed to fetch market movers" });
+    }
+  });
+
+  app.get("/api/history", async (req, res) => {
+    try {
+      const platform = req.query.platform;
+      const id = req.query.id;
+      const url = req.query.url;
+      if (typeof platform !== "string" || typeof id !== "string") {
+        return res.status(400).json({ error: "platform and id query params are required" });
+      }
+      const data = await getMarketHistory({ platform, id, url: typeof url === "string" ? url : undefined });
+      res.json(data);
+    } catch (err) {
+      console.error("Error fetching market history:", err);
+      res.status(500).json({ error: "Failed to fetch market history" });
     }
   });
 
