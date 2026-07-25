@@ -198,89 +198,114 @@ function pickBestWindow(m: PolymarketMarket): { changePct: number; window: strin
   return best;
 }
 
-async function fetchPolymarket(): Promise<MarketMove[]> {
-  const url =
-    "https://gamma-api.polymarket.com/markets?limit=150&active=true&closed=false&order=volume24hr&ascending=false";
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!res.ok) throw new Error(`Polymarket fetch failed: ${res.status}`);
-  const data: PolymarketMarket[] = await res.json();
+function processPolymarketMarket(m: PolymarketMarket): MarketMove | null {
+  const best = pickBestWindow(m);
+  if (!best || best.changePct === 0) return null;
 
-  const moves: MarketMove[] = [];
+  let outcomes: string[] = [];
+  let outcomePrices: string[] = [];
+  try {
+    outcomes = m.outcomes ? JSON.parse(m.outcomes) : [];
+    outcomePrices = m.outcomePrices ? JSON.parse(m.outcomePrices) : [];
+  } catch {
+    // ignore parse errors
+  }
 
-  for (const m of data) {
-    try {
-      const best = pickBestWindow(m);
-      if (!best || best.changePct === 0) continue;
+  const yesPrice =
+    typeof m.lastTradePrice === "number"
+      ? m.lastTradePrice
+      : outcomePrices.length > 0
+      ? parseFloat(outcomePrices[0])
+      : undefined;
+  if (yesPrice === undefined || Number.isNaN(yesPrice)) return null;
 
-      let outcomes: string[] = [];
-      let outcomePrices: string[] = [];
-      try {
-        outcomes = m.outcomes ? JSON.parse(m.outcomes) : [];
-        outcomePrices = m.outcomePrices ? JSON.parse(m.outcomePrices) : [];
-      } catch {
-        // ignore parse errors
-      }
+  const currentProbability = yesPrice * 100;
+  const direction: "up" | "down" = best.changePct >= 0 ? "up" : "down";
 
-      const yesPrice =
-        typeof m.lastTradePrice === "number"
-          ? m.lastTradePrice
-          : outcomePrices.length > 0
-          ? parseFloat(outcomePrices[0])
-          : undefined;
-      if (yesPrice === undefined || Number.isNaN(yesPrice)) continue;
+  const event = m.events?.[0];
+  const title = event?.title || m.question;
+  const eventSlug = event?.slug || m.slug;
+  const contextDescription = event?.eventMetadata?.context_description;
 
-      const currentProbability = yesPrice * 100;
-      const direction: "up" | "down" = best.changePct >= 0 ? "up" : "down";
+  const volume = m.volume24hr ?? 0;
+  const liquidity = typeof m.liquidity === "string" ? parseFloat(m.liquidity) : m.liquidity ?? undefined;
 
-      const event = m.events?.[0];
-      const title = event?.title || m.question;
-      const eventSlug = event?.slug || m.slug;
-      const contextDescription = event?.eventMetadata?.context_description;
-
-      const volume = m.volume24hr ?? 0;
-      const liquidity =
-        typeof m.liquidity === "string" ? parseFloat(m.liquidity) : m.liquidity ?? undefined;
-
-      const body =
-        contextDescription && contextDescription.trim().length > 20
-          ? contextDescription.trim()
-          : templatedBody({
-              platform: "polymarket",
-              title,
-              currentProbability,
-              changePct: best.changePct,
-              direction,
-              volume,
-              liquidity,
-              endDate: m.endDate,
-              window: best.window,
-            });
-      const bodySource: "generated" | "polymarket" =
-        contextDescription && contextDescription.trim().length > 20 ? "polymarket" : "generated";
-
-      moves.push({
-        id: `pm-${m.id}`,
+  const isVerbatim = !!contextDescription && contextDescription.trim().length > 20;
+  const body = isVerbatim
+    ? contextDescription!.trim()
+    : templatedBody({
         platform: "polymarket",
         title,
-        headline: buildHeadline(title, currentProbability, best.changePct, direction, best.window),
-        category: classifyCategory(`${title} ${outcomes.join(" ")}`),
         currentProbability,
         changePct: best.changePct,
         direction,
-        window: best.window,
         volume,
         liquidity,
-        url: `https://polymarket.com/event/${eventSlug}`,
-        image: m.image || null,
-        body,
-        bodySource,
-        endDate: m.endDate || null,
-        updatedAt: new Date().toISOString(),
+        endDate: m.endDate,
+        window: best.window,
       });
-    } catch {
-      // skip malformed market entries
-      continue;
+  const bodySource: "generated" | "polymarket" = isVerbatim ? "polymarket" : "generated";
+
+  return {
+    id: `pm-${m.id}`,
+    platform: "polymarket",
+    title,
+    headline: buildHeadline(title, currentProbability, best.changePct, direction, best.window),
+    category: classifyCategory(`${title} ${outcomes.join(" ")}`),
+    currentProbability,
+    changePct: best.changePct,
+    direction,
+    window: best.window,
+    volume,
+    liquidity,
+    url: `https://polymarket.com/event/${eventSlug}`,
+    image: m.image || null,
+    body,
+    bodySource,
+    endDate: m.endDate || null,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+// Gamma API's `limit` is a page size, not a hard ceiling — the original
+// single-request fetch (limit=150, no pagination) meant anything outside the
+// top 150 markets by 24h volume was invisible to Basis Point regardless of
+// how much its probability had moved. Paginating via `offset` fixes that.
+// MAX_PAGES bounds total requests/latency in case the API ever returns more
+// pages than expected; a short/empty page ends pagination naturally before
+// that cap is reached in the common case.
+const POLYMARKET_PAGE_SIZE = 150;
+const POLYMARKET_MAX_PAGES = 5; // up to ~750 markets, ordered by 24h volume desc
+
+async function fetchPolymarket(): Promise<MarketMove[]> {
+  const baseUrl = "https://gamma-api.polymarket.com/markets";
+  const moves: MarketMove[] = [];
+
+  for (let page = 0; page < POLYMARKET_MAX_PAGES; page++) {
+    const offset = page * POLYMARKET_PAGE_SIZE;
+    const url = `${baseUrl}?limit=${POLYMARKET_PAGE_SIZE}&offset=${offset}&active=true&closed=false&order=volume24hr&ascending=false`;
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!res.ok) {
+      // A hiccup partway through pagination shouldn't discard everything
+      // already fetched on earlier pages — only the very first page failing
+      // is treated as a hard failure (mirrors the Kalshi fetch's behaviour).
+      if (page === 0) throw new Error(`Polymarket fetch failed: ${res.status}`);
+      break;
     }
+    const data: PolymarketMarket[] = await res.json();
+    if (data.length === 0) break;
+
+    for (const m of data) {
+      try {
+        const move = processPolymarketMarket(m);
+        if (move) moves.push(move);
+      } catch {
+        // skip malformed market entries
+        continue;
+      }
+    }
+
+    if (data.length < POLYMARKET_PAGE_SIZE) break; // short page means no more data
   }
 
   return moves;
@@ -352,7 +377,13 @@ async function fetchKalshi(): Promise<MarketMove[]> {
   const moves: MarketMove[] = [];
 
   let cursor: string | undefined;
-  const MAX_PAGES = 3;
+  // Previously this loop also broke early once `moves.length >= 200`, which
+  // in practice fired well before MAX_PAGES was reached — so the effective
+  // limit was "however many events it takes to find 200 qualifying moves,"
+  // not a real sweep of what's open. MAX_PAGES alone now governs how much
+  // is fetched; raised alongside removing that early-exit to actually cover
+  // meaningfully more of the open market than before.
+  const MAX_PAGES = 6;
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const url = cursor ? `${baseUrl}&cursor=${encodeURIComponent(cursor)}` : baseUrl;
@@ -425,7 +456,7 @@ async function fetchKalshi(): Promise<MarketMove[]> {
     }
 
     cursor = data.cursor;
-    if (!cursor || moves.length >= 200) break;
+    if (!cursor) break; // no more pages
   }
 
   return moves;
