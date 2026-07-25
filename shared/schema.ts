@@ -56,9 +56,27 @@ export const marketMoveSchema = z.object({
 
 export type MarketMove = z.infer<typeof marketMoveSchema>;
 
+export const crossPlatformMatchSchema = z.object({
+  polymarketId: z.string(),
+  kalshiId: z.string(),
+  polymarketTitle: z.string(),
+  kalshiTitle: z.string(),
+  confidence: z.number(),
+  tier: z.enum(["high", "medium", "low"]),
+  signals: z.object({
+    titleSimilarity: z.number(),
+    categoryMatch: z.boolean(),
+    dateProximityDays: z.number().nullable(),
+    sharedEntities: z.array(z.string()),
+  }),
+});
+
+export type CrossPlatformMatch = z.infer<typeof crossPlatformMatchSchema>;
+
 export const moversResponseSchema = z.object({
   movers: z.array(marketMoveSchema),
   extremeMovers: z.array(marketMoveSchema),
+  crossPlatformMatches: z.array(crossPlatformMatchSchema),
   lastUpdated: z.string(),
   sourceCounts: z.object({
     polymarket: z.number(),

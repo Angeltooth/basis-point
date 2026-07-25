@@ -1,10 +1,12 @@
 import type { Category, MarketMove } from "@shared/schema";
+import { matchCrossPlatform, type CrossPlatformMatch } from "./matching";
 
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
 
 interface MoversCache {
   movers: MarketMove[];
   extremeMovers: MarketMove[];
+  crossPlatformMatches: CrossPlatformMatch[];
   lastUpdated: string;
   sourceCounts: { polymarket: number; kalshi: number };
 }
@@ -474,9 +476,15 @@ async function computeMovers() {
   const movers = all.slice(0, 60);
   const extremeMovers = all.slice(0, 10);
 
+  // Matched against the full fetched sets, not just the top-60 slice above —
+  // a match can exist between two markets that individually didn't move
+  // enough to rank in "movers" this cycle.
+  const crossPlatformMatches = matchCrossPlatform(polymarketMoves, kalshiMoves);
+
   return {
     movers,
     extremeMovers,
+    crossPlatformMatches,
     lastUpdated: new Date().toISOString(),
     sourceCounts: {
       polymarket: polymarketMoves.length,
