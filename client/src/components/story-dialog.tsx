@@ -94,9 +94,30 @@ export function StoryDialog({ move, onOpenChange }: StoryDialogProps) {
 
         <MarketHistoryChart move={move} />
 
-        <p className="text-base leading-relaxed text-foreground" data-testid="text-dialog-body">
-          {move.body}
-        </p>
+        {move.bodySource === "generated" ? (
+          <ul
+            className="space-y-2 text-base leading-relaxed text-foreground list-disc pl-5"
+            data-testid="text-dialog-body"
+          >
+            {move.body
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((line, i) => (
+                <li key={i}>{line}</li>
+              ))}
+          </ul>
+        ) : (
+          <div className="space-y-3 text-base leading-relaxed text-foreground" data-testid="text-dialog-body">
+            {move.body
+              .split(/\n\n+/)
+              .map((para) => para.trim())
+              .filter(Boolean)
+              .map((para, i) => (
+                <p key={i}>{para}</p>
+              ))}
+          </div>
+        )}
         {move.bodySource === "polymarket" && (
           <p className="text-xs text-muted-foreground italic" data-testid="text-dialog-attribution">
             Description via Polymarket.

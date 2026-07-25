@@ -120,8 +120,6 @@ function templatedBody(params: {
   eventContext?: string;
 }): string {
   const {
-    platform,
-    title,
     currentProbability,
     changePct,
     direction,
@@ -132,7 +130,6 @@ function templatedBody(params: {
     window,
     eventContext,
   } = params;
-  const platformName = platform === "polymarket" ? "Polymarket" : "Kalshi";
   const dir = direction === "up" ? "risen" : "fallen";
   const magnitude = Math.abs(changePct).toFixed(1);
   const liquidityClause = liquidity
@@ -141,15 +138,24 @@ function templatedBody(params: {
   const totalVolumeClause =
     totalVolume && totalVolume > volume ? ` (${formatVolume(totalVolume)} total volume to date)` : "";
   const resolution = timeToResolution(endDate);
-  const eventContextClause = eventContext ? ` This market is one of several tracked under "${eventContext}."` : "";
 
-  return `Traders on ${platformName} have pushed the probability of "${title}" ${dir} by ${magnitude} percentage points over the past ${windowLabel(
-    window
-  )}, with the market now pricing this outcome at ${currentProbability.toFixed(
-    0
-  )}%. The move came alongside ${formatVolume(
-    volume
-  )} in 24-hour trading volume${totalVolumeClause}${liquidityClause}, signaling active repricing from the crowd.${eventContextClause} The market is scheduled to resolve ${resolution}. As with all prediction markets, current prices reflect the crowd's live best estimate of the odds — not a certainty — and can continue to shift as new information arrives before resolution.`;
+  // Each bullet is one distinct fact, kept short and self-contained — the
+  // client renders bodySource:"generated" text as a bullet list (splitting
+  // on \n), not a prose paragraph. This only applies to our own generated
+  // copy; Polymarket's verbatim context_description (bodySource:"polymarket")
+  // is rendered as prose as-is, since restructuring someone else's wording
+  // into synthetic bullets would misrepresent structure they didn't write.
+  const bullets = [
+    `Probability has ${dir} ${magnitude} percentage points over the past ${windowLabel(
+      window
+    )}, now pricing this outcome at ${currentProbability.toFixed(0)}%.`,
+    `${formatVolume(volume)} in 24-hour trading volume${totalVolumeClause}${liquidityClause}, signaling active repricing from the crowd.`,
+    ...(eventContext ? [`This market is one of several tracked under "${eventContext}."`] : []),
+    `Scheduled to resolve ${resolution}.`,
+    `As with all prediction markets, current prices reflect the crowd's live best estimate of the odds — not a certainty — and can continue to shift as new information arrives before resolution.`,
+  ];
+
+  return bullets.join("\n");
 }
 
 // ---------------- Polymarket ----------------

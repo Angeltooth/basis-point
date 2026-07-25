@@ -181,14 +181,12 @@ function templatedManifoldBody(params: {
   isPlayMoney: boolean;
 }): string {
   const {
-    title,
     currentProbability,
     changePct,
     direction,
     volume,
     uniqueBettorCount,
     closeTime,
-    window,
     isPlayMoney,
   } = params;
   const dir = direction === "up" ? "risen" : "fallen";
@@ -196,15 +194,19 @@ function templatedManifoldBody(params: {
   const bettorClause = uniqueBettorCount ? ` from ${uniqueBettorCount} traders` : "";
   const resolution = timeToResolution(closeTime);
   const currencyNote = isPlayMoney
-    ? " Manifold uses play-money (Mana), not real currency — prices still reflect aggregated trader belief, but nothing is staked financially."
-    : " This is one of Manifold's real-money markets (settled in USD), unlike most Manifold markets which use play-money Mana.";
+    ? "Manifold uses play-money (Mana), not real currency — prices still reflect aggregated trader belief, but nothing is staked financially."
+    : "This is one of Manifold's real-money markets (settled in USD), unlike most Manifold markets which use play-money Mana.";
 
-  return `Traders on Manifold have pushed the probability of "${title}" ${dir} by ${magnitude} percentage points since the last check, with the market now pricing this outcome at ${currentProbability.toFixed(
-    0
-  )}%. The move came alongside ${formatManifoldVolume(
-    volume,
-    isPlayMoney
-  )} in 24-hour trading activity${bettorClause}.${currencyNote} The market is scheduled to resolve ${resolution}.`;
+  const bullets = [
+    `Probability has ${dir} ${magnitude} percentage points since the last check, now pricing this outcome at ${currentProbability.toFixed(
+      0
+    )}%.`,
+    `${formatManifoldVolume(volume, isPlayMoney)} in 24-hour trading activity${bettorClause}.`,
+    currencyNote,
+    `Scheduled to resolve ${resolution}.`,
+  ];
+
+  return bullets.join("\n");
 }
 
 // search-markets page size/pagination behavior wasn't verified live (see
