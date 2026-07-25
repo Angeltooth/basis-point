@@ -2,14 +2,16 @@ import type { Category, MarketMove } from "@shared/schema";
 
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
 
-let cache: {
+interface MoversCache {
   movers: MarketMove[];
   extremeMovers: MarketMove[];
   lastUpdated: string;
   sourceCounts: { polymarket: number; kalshi: number };
-} | null = null;
+}
+
+let cache: MoversCache | null = null;
 let cacheTimestamp = 0;
-let inflightFetch: Promise<typeof cache> | null = null;
+let inflightFetch: Promise<MoversCache> | null = null;
 
 // ---------------- Category classification ----------------
 
