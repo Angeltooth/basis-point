@@ -297,7 +297,7 @@ function processPolymarketMarket(m: PolymarketMarket): MarketMove | null {
 // pages than expected; a short/empty page ends pagination naturally before
 // that cap is reached in the common case.
 const POLYMARKET_PAGE_SIZE = 150;
-const POLYMARKET_MAX_PAGES = 5; // up to ~750 markets, ordered by 24h volume desc
+const POLYMARKET_MAX_PAGES = 10; // up to ~1500 markets, ordered by 24h volume desc — raised from 5 pages (~750) since volume-sorting was structurally starving numerous-but-low-volume categories (e.g. international soccer leagues) regardless of cap; see cross-platform sports coverage discussion
 
 async function fetchPolymarket(): Promise<MarketMove[]> {
   const baseUrl = "https://gamma-api.polymarket.com/markets";
@@ -432,8 +432,12 @@ async function fetchKalshi(): Promise<MarketMove[]> {
   // limit was "however many events it takes to find 200 qualifying moves,"
   // not a real sweep of what's open. MAX_PAGES alone now governs how much
   // is fetched; raised alongside removing that early-exit to actually cover
-  // meaningfully more of the open market than before.
-  const MAX_PAGES = 6;
+  // meaningfully more of the open market than before. Raised again from 6
+  // to 12 (up to ~2400 events) — Kalshi's /events endpoint has no volume
+  // sort or category filter (confirmed against official docs), so a numerous
+  // category like international soccer can still fall outside whatever page
+  // cap is set; this is a partial mitigation, not a structural fix.
+  const MAX_PAGES = 12;
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const url = cursor ? `${baseUrl}&cursor=${encodeURIComponent(cursor)}` : baseUrl;
