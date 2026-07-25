@@ -425,6 +425,22 @@ async function fetchKalshi(): Promise<MarketMove[]> {
 
 // ---------------- Aggregation ----------------
 
+// Composite ranking score: raw magnitude alone lets a market that moved 60pp
+// on a single small trade outrank a market that moved 20pp on heavy, genuine
+// trading. Scaling by log10(activity) keeps big swings on top while damping
+// the influence of thin/illiquid markets, without hard-filtering them out
+// (a still-interesting 40pp move on modest volume stays visible, just ranked
+// below a 40pp move backed by real size).
+const ACTIVITY_FLOOR = 10; // avoids log(0)/log(negative-ish) blowups and stops
+// near-zero-volume markets from getting an outsized score just because the
+// floor is small (e.g. log10(10) = 1 rather than log10(0.01) = -2).
+
+function rankScore(m: MarketMove): number {
+  const magnitude = Math.abs(m.changePct);
+  const activity = (m.volume || 0) + (m.liquidity || 0);
+  return magnitude * Math.log10(activity + ACTIVITY_FLOOR);
+}
+
 async function computeMovers() {
   const [polymarketMoves, kalshiMoves] = await Promise.all([
     fetchPolymarket().catch((err) => {
@@ -438,7 +454,7 @@ async function computeMovers() {
   ]);
 
   const all = [...polymarketMoves, ...kalshiMoves];
-  all.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
+  all.sort((a, b) => rankScore(b) - rankScore(a));
 
   const movers = all.slice(0, 60);
   const extremeMovers = all.slice(0, 10);
