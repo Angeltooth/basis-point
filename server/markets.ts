@@ -504,7 +504,12 @@ async function computeMovers() {
   const all = [...polymarketMoves, ...kalshiMoves];
   all.sort((a, b) => rankScore(b) - rankScore(a));
 
-  const movers = all.slice(0, 60);
+  // No cap here by design — every market that changed price and passed the
+  // upstream filters (combo/dead-market exclusion, volume/liquidity floor)
+  // shows up, sorted by rankScore. extremeMovers stays capped at 10: it's a
+  // distinct "highlights" ticker, not the main feed, and an uncapped
+  // scrolling marquee would defeat its purpose.
+  const movers = all;
   const extremeMovers = all.slice(0, 10);
 
   // Matched against the full fetched sets, not just the top-60 slice above —
