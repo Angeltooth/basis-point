@@ -3,14 +3,16 @@ import type { MarketMove } from "@shared/schema";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatDelta, formatVolume, platformLabel, timeAgo, windowBadgeLabel, isInstantTick } from "@/lib/format";
+import { highlightMatch } from "@/lib/highlight";
 import { cn } from "@/lib/utils";
 
 interface StoryCardProps {
   move: MarketMove;
   onOpen: (move: MarketMove) => void;
+  highlightQuery?: string;
 }
 
-export function StoryCard({ move, onOpen }: StoryCardProps) {
+export function StoryCard({ move, onOpen, highlightQuery }: StoryCardProps) {
   const isUp = move.direction === "up";
 
   return (
@@ -37,7 +39,7 @@ export function StoryCard({ move, onOpen }: StoryCardProps) {
             {platformLabel(move.platform)}
           </Badge>
           <Badge variant="secondary" className="text-[10px] uppercase tracking-wide" data-testid={`badge-category-${move.id}`}>
-            {move.category}
+            {highlightQuery ? highlightMatch(move.category, highlightQuery) : move.category}
           </Badge>
         </div>
         <span className="text-xs font-mono text-muted-foreground shrink-0" data-testid={`text-timeago-${move.id}`}>
@@ -46,7 +48,7 @@ export function StoryCard({ move, onOpen }: StoryCardProps) {
       </div>
 
       <h3 className="font-serif font-semibold text-lg leading-snug text-foreground" data-testid={`text-headline-${move.id}`}>
-        {move.headline}
+        {highlightQuery ? highlightMatch(move.headline, highlightQuery) : move.headline}
       </h3>
 
       <div className="flex items-center gap-3 flex-wrap mt-auto pt-1">
