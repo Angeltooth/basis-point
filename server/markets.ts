@@ -1,5 +1,7 @@
 import type { Category, MarketMove } from "@shared/schema";
 import { matchCrossPlatform, type CrossPlatformMatch } from "./matching";
+import { classifyKeywords, classifyKeywordsWithDefault } from "./classify";
+import { fetchManifold } from "./manifold";
 
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
 
@@ -8,7 +10,7 @@ interface MoversCache {
   extremeMovers: MarketMove[];
   crossPlatformMatches: CrossPlatformMatch[];
   lastUpdated: string;
-  sourceCounts: { polymarket: number; kalshi: number };
+  sourceCounts: { polymarket: number; kalshi: number; manifold: number };
 }
 
 let cache: MoversCache | null = null;
@@ -16,40 +18,23 @@ let cacheTimestamp = 0;
 let inflightFetch: Promise<MoversCache> | null = null;
 
 // ---------------- Category classification ----------------
+//
+// Polymarket and Kalshi (and Manifold) each have their own native
+// category/tag vocabulary, none of which is guaranteed complete or stable —
+// see classifyKeywords() in ./classify for the shared keyword fallback used
+// when a platform's own label doesn't confidently map to one of our
+// buckets. Below wires each platform's specific classification strategy.
 
-const CATEGORY_RULES: Array<{ category: Category; keywords: RegExp }> = [
-  {
-    category: "Politics",
-    keywords:
-      /\b(election|president|senate|congress|governor|mayor|vote|poll|democrat|republican|gop|impeach|nominee|primary|shutdown|legislation|supreme court|cabinet|prime minister|parliament|referendum|policy|white house|administration|geopolitic|war in|ceasefire|sanctions|nato|trump|biden|harris|putin|zelensky|xi jinping)\b/i,
-  },
-  {
-    category: "Sports",
-    keywords:
-      /\b(nfl|nba|nhl|mlb|ufc|mma|boxing|premier league|la liga|champions league|world cup|olympics|tennis|golf|pga|f1|formula 1|nascar|super bowl|playoffs|match|tournament|esports|league of legends|dota|csgo|valorant|game \d|vs\.?|wins the|championship)\b/i,
-  },
-  {
-    category: "Crypto & Business",
-    keywords:
-      /\b(bitcoin|btc|ethereum|eth|crypto|solana|sol|dogecoin|xrp|stablecoin|sec\b|federal reserve|fed\b|interest rate|inflation|cpi|gdp|stock|nasdaq|s&p|ipo|earnings|merger|acquisition|bankruptcy|tesla|apple|nvidia|amazon|google|meta|microsoft|market cap|recession|tariff|oil price|opec)\b/i,
-  },
-  {
-    category: "Entertainment & Culture",
-    keywords:
-      /\b(movie|film|box office|oscar|grammy|emmy|album|celebrity|taylor swift|kanye|drake|netflix|hbo|disney|tv show|season finale|reality show|award show|singer|actor|actress|billboard|streaming|kardashian)\b/i,
-  },
-  {
-    category: "Weather & Science",
-    keywords:
-      /\b(hurricane|storm|weather|temperature|climate|earthquake|wildfire|nasa|spacex|rocket launch|space station|vaccine|pandemic|virus|outbreak|scientific|research study|nobel prize|ai model|artificial intelligence|openai|anthropic|agi)\b/i,
-  },
-];
-
-function classifyCategory(title: string): Category {
-  for (const rule of CATEGORY_RULES) {
-    if (rule.keywords.test(title)) return rule.category;
+// Polymarket events carry a native `tags` array (e.g. "Sports", "Crypto",
+// "NBA") — a much stronger signal than guessing from title text. Tags are
+// tried first, in order, via the shared keyword matcher; title-text
+// classification is only a fallback for the rare event with no useful tags.
+function classifyPolymarketCategory(tagNames: string[], title: string, outcomes: string[]): Category {
+  for (const tag of tagNames) {
+    const match = classifyKeywords(tag);
+    if (match) return match;
   }
-  return "Other";
+  return classifyKeywordsWithDefault(`${title} ${outcomes.join(" ")}`);
 }
 
 // ---------------- Headline generation ----------------
@@ -156,10 +141,14 @@ function templatedBody(params: {
 interface PolymarketEventMeta {
   context_description?: string;
 }
+interface PolymarketTag {
+  name?: string;
+}
 interface PolymarketEvent {
   title?: string;
   slug?: string;
   eventMetadata?: PolymarketEventMeta;
+  tags?: PolymarketTag[];
 }
 interface PolymarketMarket {
   id: string;
@@ -226,6 +215,7 @@ function processPolymarketMarket(m: PolymarketMarket): MarketMove | null {
   const title = event?.title || m.question;
   const eventSlug = event?.slug || m.slug;
   const contextDescription = event?.eventMetadata?.context_description;
+  const tagNames = (event?.tags ?? []).map((t) => t.name).filter((n): n is string => !!n);
 
   const volume = m.volume24hr ?? 0;
   const liquidity = typeof m.liquidity === "string" ? parseFloat(m.liquidity) : m.liquidity ?? undefined;
@@ -251,7 +241,7 @@ function processPolymarketMarket(m: PolymarketMarket): MarketMove | null {
     platform: "polymarket",
     title,
     headline: buildHeadline(title, currentProbability, best.changePct, direction, best.window),
-    category: classifyCategory(`${title} ${outcomes.join(" ")}`),
+    category: classifyPolymarketCategory(tagNames, title, outcomes),
     currentProbability,
     changePct: best.changePct,
     direction,
@@ -262,6 +252,7 @@ function processPolymarketMarket(m: PolymarketMarket): MarketMove | null {
     image: m.image || null,
     body,
     bodySource,
+    isPlayMoney: false,
     endDate: m.endDate || null,
     updatedAt: new Date().toISOString(),
   };
@@ -337,8 +328,15 @@ interface KalshiEvent {
   markets?: KalshiMarket[];
 }
 
-// Kalshi's own event `category` field maps directly onto our buckets —
-// no keyword-guessing needed for Kalshi content.
+// Kalshi's own event `category` field maps directly onto our buckets for
+// every value observed in this project's development so far. This map isn't
+// guaranteed exhaustive though — Kalshi can add new category values without
+// notice, and this list can't be re-verified against the live API from this
+// build environment. classifyKalshiCategory() falls back to the shared
+// keyword matcher for anything not explicitly listed here, and tracks any
+// value that still doesn't confidently resolve, so a real run against live
+// data surfaces gaps (via logUnmappedKalshiCategories()) instead of silently
+// dumping everything unrecognized into "Other".
 const KALSHI_CATEGORY_MAP: Record<string, Category> = {
   Elections: "Politics",
   Politics: "Politics",
@@ -347,17 +345,38 @@ const KALSHI_CATEGORY_MAP: Record<string, Category> = {
   Financials: "Crypto & Business",
   Economics: "Crypto & Business",
   Companies: "Crypto & Business",
+  Crypto: "Crypto & Business",
   Entertainment: "Entertainment & Culture",
   Social: "Entertainment & Culture",
+  Culture: "Entertainment & Culture",
   "Climate and Weather": "Weather & Science",
   "Science and Technology": "Weather & Science",
   Health: "Weather & Science",
   Transportation: "Other",
 };
 
+const unmappedKalshiCategories = new Set<string>();
+
 function classifyKalshiCategory(rawCategory: string | undefined): Category {
   if (!rawCategory) return "Other";
-  return KALSHI_CATEGORY_MAP[rawCategory] ?? "Other";
+  const mapped = KALSHI_CATEGORY_MAP[rawCategory];
+  if (mapped) return mapped;
+  const keywordMatch = classifyKeywords(rawCategory);
+  if (keywordMatch) return keywordMatch;
+  unmappedKalshiCategories.add(rawCategory);
+  return "Other";
+}
+
+// Called once per fetch cycle — surfaces any Kalshi category string that
+// fell all the way through to "Other" so it's visible in server logs
+// (npm run dev) rather than silently invisible in the API response.
+function logUnmappedKalshiCategories() {
+  if (unmappedKalshiCategories.size === 0) return;
+  console.warn(
+    `[markets] Kalshi returned ${unmappedKalshiCategories.size} unrecognized categor${
+      unmappedKalshiCategories.size === 1 ? "y" : "ies"
+    } (bucketed as "Other"): ${Array.from(unmappedKalshiCategories).join(", ")}`
+  );
 }
 
 function isComboMarket(m: KalshiMarket): boolean {
@@ -446,6 +465,7 @@ async function fetchKalshi(): Promise<MarketMove[]> {
             image: null,
             body,
             bodySource: "generated" as const,
+            isPlayMoney: false,
             endDate: m.close_time || null,
             updatedAt: new Date().toISOString(),
           });
@@ -459,6 +479,7 @@ async function fetchKalshi(): Promise<MarketMove[]> {
     if (!cursor) break; // no more pages
   }
 
+  logUnmappedKalshiCategories();
   return moves;
 }
 
@@ -490,7 +511,7 @@ function rankScore(m: MarketMove): number {
 }
 
 async function computeMovers() {
-  const [polymarketMoves, kalshiMoves] = await Promise.all([
+  const [polymarketMoves, kalshiMoves, manifoldMoves] = await Promise.all([
     fetchPolymarket().catch((err) => {
       console.error("Polymarket fetch error:", err);
       return [] as MarketMove[];
@@ -499,9 +520,13 @@ async function computeMovers() {
       console.error("Kalshi fetch error:", err);
       return [] as MarketMove[];
     }),
+    fetchManifold().catch((err) => {
+      console.error("Manifold fetch error:", err);
+      return [] as MarketMove[];
+    }),
   ]);
 
-  const all = [...polymarketMoves, ...kalshiMoves];
+  const all = [...polymarketMoves, ...kalshiMoves, ...manifoldMoves];
   all.sort((a, b) => rankScore(b) - rankScore(a));
 
   // No cap here by design — every market that changed price and passed the
@@ -514,7 +539,10 @@ async function computeMovers() {
 
   // Matched against the full fetched sets, not just the top-60 slice above —
   // a match can exist between two markets that individually didn't move
-  // enough to rank in "movers" this cycle.
+  // enough to rank in "movers" this cycle. Still Polymarket<->Kalshi only:
+  // extending to include Manifold would mean generalizing matching.ts's
+  // pairwise CrossPlatformMatch shape (currently polymarketId/kalshiId
+  // fields) to N platforms — a real follow-up, not done in this pass.
   const crossPlatformMatches = matchCrossPlatform(polymarketMoves, kalshiMoves);
 
   return {
@@ -525,6 +553,7 @@ async function computeMovers() {
     sourceCounts: {
       polymarket: polymarketMoves.length,
       kalshi: kalshiMoves.length,
+      manifold: manifoldMoves.length,
     },
   };
 }

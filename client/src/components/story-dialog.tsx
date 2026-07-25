@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { formatDelta, formatVolume, platformLabel, timeAgo, windowBadgeLabel, isInstantTick } from "@/lib/format";
+import { formatDelta, formatMoveVolume, platformLabel, platformBadgeClass, timeAgo, windowBadgeLabel, isInstantTick } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 interface StoryDialogProps {
@@ -28,13 +28,19 @@ export function StoryDialog({ move, onOpenChange }: StoryDialogProps) {
           <div className="flex items-center gap-1.5 flex-wrap mb-1">
             <Badge
               variant="outline"
-              className={cn(
-                "font-mono text-[10px] tracking-wide uppercase",
-                move.platform === "polymarket" ? "text-primary border-primary/30" : "text-chart-4 border-chart-4/30"
-              )}
+              className={cn("font-mono text-[10px] tracking-wide uppercase", platformBadgeClass(move.platform))}
             >
               {platformLabel(move.platform)}
             </Badge>
+            {move.isPlayMoney && (
+              <Badge
+                variant="outline"
+                className="font-mono text-[10px] tracking-wide uppercase text-muted-foreground border-border"
+                title="Manifold uses play-money (Mana), not real currency"
+              >
+                Play Money
+              </Badge>
+            )}
             <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">
               {move.category}
             </Badge>
@@ -63,7 +69,7 @@ export function StoryDialog({ move, onOpenChange }: StoryDialogProps) {
             {move.currentProbability.toFixed(1)}% chance
           </span>
           <span className="font-mono text-sm text-muted-foreground" data-testid="text-dialog-volume">
-            {formatVolume(move.volume)} 24h volume
+            {formatMoveVolume(move)} 24h volume
           </span>
           <span
             className={cn(

@@ -2,7 +2,7 @@ import { ArrowUpRight, ArrowDownRight, TrendingUp } from "lucide-react";
 import type { MarketMove } from "@shared/schema";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { formatDelta, formatVolume, platformLabel, timeAgo, windowBadgeLabel, isInstantTick } from "@/lib/format";
+import { formatDelta, formatMoveVolume, platformLabel, platformBadgeClass, timeAgo, windowBadgeLabel, isInstantTick } from "@/lib/format";
 import { highlightMatch } from "@/lib/highlight";
 import { cn } from "@/lib/utils";
 
@@ -30,14 +30,21 @@ export function StoryCard({ move, onOpen, highlightQuery }: StoryCardProps) {
         <div className="flex items-center gap-1.5 flex-wrap">
           <Badge
             variant="outline"
-            className={cn(
-              "font-mono text-[10px] tracking-wide uppercase",
-              move.platform === "polymarket" ? "text-primary border-primary/30" : "text-chart-4 border-chart-4/30"
-            )}
+            className={cn("font-mono text-[10px] tracking-wide uppercase", platformBadgeClass(move.platform))}
             data-testid={`badge-platform-${move.id}`}
           >
             {platformLabel(move.platform)}
           </Badge>
+          {move.isPlayMoney && (
+            <Badge
+              variant="outline"
+              className="font-mono text-[10px] tracking-wide uppercase text-muted-foreground border-border"
+              data-testid={`badge-playmoney-${move.id}`}
+              title="Manifold uses play-money (Mana), not real currency"
+            >
+              Play Money
+            </Badge>
+          )}
           <Badge variant="secondary" className="text-[10px] uppercase tracking-wide" data-testid={`badge-category-${move.id}`}>
             {highlightQuery ? highlightMatch(move.category, highlightQuery) : move.category}
           </Badge>
@@ -67,7 +74,7 @@ export function StoryCard({ move, onOpen, highlightQuery }: StoryCardProps) {
           {move.currentProbability.toFixed(0)}%
         </span>
         <span className="font-mono text-xs text-muted-foreground" data-testid={`text-volume-${move.id}`}>
-          {formatVolume(move.volume)} vol
+          {formatMoveVolume(move)} vol
         </span>
         <span
           className={cn(

@@ -33,7 +33,7 @@ export type Category = (typeof CATEGORIES)[number];
 
 export const marketMoveSchema = z.object({
   id: z.string(),
-  platform: z.enum(["polymarket", "kalshi"]),
+  platform: z.enum(["polymarket", "kalshi", "manifold"]),
   title: z.string(),
   headline: z.string(),
   category: z.enum(CATEGORIES),
@@ -50,6 +50,10 @@ export const marketMoveSchema = z.object({
   // only Polymarket's context_description) vs our own templated text — lets
   // the UI credit the source instead of presenting it as house-written.
   bodySource: z.enum(["generated", "polymarket"]).default("generated"),
+  // True for Manifold moves: play-money (Mana), not real currency — the UI
+  // must not present this volume/activity as equivalent to real-dollar
+  // volume on Polymarket/Kalshi.
+  isPlayMoney: z.boolean().default(false),
   endDate: z.string().nullable().optional(),
   updatedAt: z.string(),
 });
@@ -81,6 +85,7 @@ export const moversResponseSchema = z.object({
   sourceCounts: z.object({
     polymarket: z.number(),
     kalshi: z.number(),
+    manifold: z.number(),
   }),
 });
 
