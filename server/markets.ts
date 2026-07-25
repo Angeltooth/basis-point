@@ -253,6 +253,8 @@ async function fetchPolymarket(): Promise<MarketMove[]> {
               endDate: m.endDate,
               window: best.window,
             });
+      const bodySource: "generated" | "polymarket" =
+        contextDescription && contextDescription.trim().length > 20 ? "polymarket" : "generated";
 
       moves.push({
         id: `pm-${m.id}`,
@@ -269,6 +271,7 @@ async function fetchPolymarket(): Promise<MarketMove[]> {
         url: `https://polymarket.com/event/${eventSlug}`,
         image: m.image || null,
         body,
+        bodySource,
         endDate: m.endDate || null,
         updatedAt: new Date().toISOString(),
       });
@@ -409,6 +412,7 @@ async function fetchKalshi(): Promise<MarketMove[]> {
             url: `https://kalshi.com/markets/${event.series_ticker}/${event.event_ticker}`,
             image: null,
             body,
+            bodySource: "generated" as const,
             endDate: m.close_time || null,
             updatedAt: new Date().toISOString(),
           });
@@ -437,10 +441,19 @@ const ACTIVITY_FLOOR = 10; // avoids log(0)/log(negative-ish) blowups and stops
 // near-zero-volume markets from getting an outsized score just because the
 // floor is small (e.g. log10(10) = 1 rather than log10(0.01) = -2).
 
+// Kalshi's "latest tick" figure is (last - prev) between the two most recent
+// trades, which could be seconds or minutes apart — it carries much less
+// evidence of a real trend than a Polymarket window that's genuinely 1h/24h/
+// 7d/30d wide. Without this, a 15pp single-trade blip ranks identically to a
+// 15pp move sustained over a full day. INSTANT_TICK_DISCOUNT down-weights
+// tick-only moves in the ranking; it does not hide them.
+const INSTANT_TICK_DISCOUNT = 0.55;
+
 function rankScore(m: MarketMove): number {
   const magnitude = Math.abs(m.changePct);
   const activity = (m.volume || 0) + (m.liquidity || 0);
-  return magnitude * Math.log10(activity + ACTIVITY_FLOOR);
+  const windowConfidence = m.window === "latest tick" ? INSTANT_TICK_DISCOUNT : 1;
+  return magnitude * Math.log10(activity + ACTIVITY_FLOOR) * windowConfidence;
 }
 
 async function computeMovers() {

@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { formatDelta, formatVolume, platformLabel, timeAgo } from "@/lib/format";
+import { formatDelta, formatVolume, platformLabel, timeAgo, windowBadgeLabel, isInstantTick } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 interface StoryDialogProps {
@@ -65,11 +65,34 @@ export function StoryDialog({ move, onOpenChange }: StoryDialogProps) {
           <span className="font-mono text-sm text-muted-foreground" data-testid="text-dialog-volume">
             {formatVolume(move.volume)} 24h volume
           </span>
+          <span
+            className={cn(
+              "font-mono text-[10px] tracking-wide uppercase rounded px-1.5 py-0.5 border",
+              isInstantTick(move.window)
+                ? "text-amber-600 border-amber-600/30 dark:text-amber-400 dark:border-amber-400/30"
+                : "text-muted-foreground border-border"
+            )}
+            data-testid="badge-dialog-window"
+          >
+            {windowBadgeLabel(move.window)}
+          </span>
         </div>
+
+        {isInstantTick(move.window) && (
+          <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="text-dialog-tick-note">
+            Based on the two most recent trades — this may reflect a single small trade rather than a
+            sustained trend.
+          </p>
+        )}
 
         <p className="text-base leading-relaxed text-foreground" data-testid="text-dialog-body">
           {move.body}
         </p>
+        {move.bodySource === "polymarket" && (
+          <p className="text-xs text-muted-foreground italic" data-testid="text-dialog-attribution">
+            Description via Polymarket.
+          </p>
+        )}
 
         <Button asChild className="w-fit" data-testid="link-dialog-external">
           <a href={move.url} target="_blank" rel="noopener noreferrer">

@@ -2,7 +2,7 @@ import { ArrowUpRight, ArrowDownRight, TrendingUp } from "lucide-react";
 import type { MarketMove } from "@shared/schema";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { formatDelta, formatVolume, platformLabel, timeAgo } from "@/lib/format";
+import { formatDelta, formatVolume, platformLabel, timeAgo, windowBadgeLabel, isInstantTick } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 interface StoryCardProps {
@@ -66,6 +66,22 @@ export function StoryCard({ move, onOpen }: StoryCardProps) {
         </span>
         <span className="font-mono text-xs text-muted-foreground" data-testid={`text-volume-${move.id}`}>
           {formatVolume(move.volume)} vol
+        </span>
+        <span
+          className={cn(
+            "font-mono text-[10px] tracking-wide uppercase rounded px-1.5 py-0.5 border",
+            isInstantTick(move.window)
+              ? "text-amber-600 border-amber-600/30 dark:text-amber-400 dark:border-amber-400/30"
+              : "text-muted-foreground border-border"
+          )}
+          data-testid={`badge-window-${move.id}`}
+          title={
+            isInstantTick(move.window)
+              ? "Based on the two most recent trades — may reflect a single small trade rather than a sustained trend"
+              : `Measured over ${move.window}`
+          }
+        >
+          {windowBadgeLabel(move.window)}
         </span>
       </div>
     </Card>

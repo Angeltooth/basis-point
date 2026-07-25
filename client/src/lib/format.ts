@@ -23,3 +23,15 @@ export function timeAgo(iso: string): string {
 export function platformLabel(platform: "polymarket" | "kalshi"): string {
   return platform === "polymarket" ? "Polymarket" : "Kalshi";
 }
+
+// A "latest tick" move is the delta between the two most recent trades —
+// could be seconds apart — as opposed to a genuine 1h/24h/7d/30d window.
+// Surfacing this distinguishes "one thin trade just happened" from
+// "sustained conviction over time," which otherwise read as equivalent.
+export function isInstantTick(window: string): boolean {
+  return window === "latest tick";
+}
+
+export function windowBadgeLabel(window: string): string {
+  return isInstantTick(window) ? "TICK" : window.toUpperCase();
+}

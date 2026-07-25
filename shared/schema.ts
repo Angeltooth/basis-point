@@ -46,6 +46,10 @@ export const marketMoveSchema = z.object({
   url: z.string(),
   image: z.string().nullable().optional(),
   body: z.string(),
+  // Marks when `body` is the platform's own copy reused verbatim (currently
+  // only Polymarket's context_description) vs our own templated text — lets
+  // the UI credit the source instead of presenting it as house-written.
+  bodySource: z.enum(["generated", "polymarket"]).default("generated"),
   endDate: z.string().nullable().optional(),
   updatedAt: z.string(),
 });
