@@ -113,19 +113,35 @@ function templatedBody(params: {
   changePct: number;
   direction: "up" | "down";
   volume: number;
+  totalVolume?: number;
   liquidity?: number;
   endDate?: string | null;
   window: string;
+  eventContext?: string;
 }): string {
-  const { platform, title, currentProbability, changePct, direction, volume, liquidity, endDate, window } =
-    params;
+  const {
+    platform,
+    title,
+    currentProbability,
+    changePct,
+    direction,
+    volume,
+    totalVolume,
+    liquidity,
+    endDate,
+    window,
+    eventContext,
+  } = params;
   const platformName = platform === "polymarket" ? "Polymarket" : "Kalshi";
   const dir = direction === "up" ? "risen" : "fallen";
   const magnitude = Math.abs(changePct).toFixed(1);
   const liquidityClause = liquidity
     ? ` with roughly ${formatVolume(liquidity)} in market liquidity`
     : "";
+  const totalVolumeClause =
+    totalVolume && totalVolume > volume ? ` (${formatVolume(totalVolume)} total volume to date)` : "";
   const resolution = timeToResolution(endDate);
+  const eventContextClause = eventContext ? ` This market is one of several tracked under "${eventContext}."` : "";
 
   return `Traders on ${platformName} have pushed the probability of "${title}" ${dir} by ${magnitude} percentage points over the past ${windowLabel(
     window
@@ -133,7 +149,7 @@ function templatedBody(params: {
     0
   )}%. The move came alongside ${formatVolume(
     volume
-  )} in 24-hour trading volume${liquidityClause}, signaling active repricing from the crowd. The market is scheduled to resolve ${resolution}. As with all prediction markets, current prices reflect the crowd's live best estimate of the odds — not a certainty — and can continue to shift as new information arrives before resolution.`;
+  )} in 24-hour trading volume${totalVolumeClause}${liquidityClause}, signaling active repricing from the crowd.${eventContextClause} The market is scheduled to resolve ${resolution}. As with all prediction markets, current prices reflect the crowd's live best estimate of the odds — not a certainty — and can continue to shift as new information arrives before resolution.`;
 }
 
 // ---------------- Polymarket ----------------
@@ -162,6 +178,7 @@ interface PolymarketMarket {
   oneMonthPriceChange?: number;
   lastTradePrice?: number;
   volume24hr?: number;
+  volume?: number; // total volume to date, distinct from volume24hr — field name per Gamma API sort key convention (order=volume), not independently verified against a live response
   liquidity?: string | number;
   image?: string;
   endDate?: string;
@@ -212,12 +229,24 @@ function processPolymarketMarket(m: PolymarketMarket): MarketMove | null {
   const direction: "up" | "down" = best.changePct >= 0 ? "up" : "down";
 
   const event = m.events?.[0];
-  const title = event?.title || m.question;
+  // BUG FIX: this used to prefer event?.title over m.question whenever an
+  // event existed (i.e. almost always). That's backwards for any event with
+  // more than one bracket/outcome market under it — e.g. a "U.S. Viewership"
+  // event with separate "46m-50m" and "58m+" markets each has their own
+  // question, but event.title is the same generic event name for both,
+  // silently erasing which specific outcome this row is actually reporting
+  // on. m.question is always the specific, accurate description of what's
+  // being priced; event.title (when it adds information beyond repeating
+  // the question) is passed through separately as context instead.
+  const title = m.question || event?.title || "Untitled market";
   const eventSlug = event?.slug || m.slug;
   const contextDescription = event?.eventMetadata?.context_description;
   const tagNames = (event?.tags ?? []).map((t) => t.name).filter((n): n is string => !!n);
+  const eventContext =
+    event?.title && event.title.trim().toLowerCase() !== title.trim().toLowerCase() ? event.title : undefined;
 
   const volume = m.volume24hr ?? 0;
+  const totalVolume = m.volume;
   const liquidity = typeof m.liquidity === "string" ? parseFloat(m.liquidity) : m.liquidity ?? undefined;
 
   const isVerbatim = !!contextDescription && contextDescription.trim().length > 20;
@@ -230,9 +259,11 @@ function processPolymarketMarket(m: PolymarketMarket): MarketMove | null {
         changePct: best.changePct,
         direction,
         volume,
+        totalVolume,
         liquidity,
         endDate: m.endDate,
         window: best.window,
+        eventContext,
       });
   const bodySource: "generated" | "polymarket" = isVerbatim ? "polymarket" : "generated";
 
