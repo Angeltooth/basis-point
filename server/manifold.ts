@@ -6,34 +6,38 @@ import { classifyKeywords, classifyKeywordsWithDefault } from "./classify";
 //
 // Manifold is a play-money prediction market: prices are still genuine
 // crowd-aggregated probabilities (anyone can create a market on anything),
-// but trading activity is denominated in "Mana" (M$), not real dollars —
-// there's no cash value or withdrawal. Two things depend on that fact:
-//   1. Every Manifold move is tagged `isPlayMoney: true` in the returned
-//      MarketMove, so the UI can badge it distinctly rather than implying
-//      real money changed hands.
-//   2. rankScore() in ./markets.ts currently feeds Manifold's volume into
-//      the exact same activity-weighting formula as Polymarket/Kalshi's
-//      real-dollar volume, per product decision — Mana and USD amounts
-//      aren't the same unit, so this may need retuning once real relative
-//      scale is visible against live data.
+// but trading activity on regular markets is denominated in "Mana" (M$), not
+// real dollars — there's no cash value or withdrawal for those. (Manifold
+// also runs real-money "CASH" token markets in some regions; `isPlayMoney`
+// below is derived from the actual `token` field rather than assumed, so a
+// CASH-token market won't be mislabeled.)
 //
-// FIELD VERIFICATION CAVEAT: this module's network calls could not be
-// tested against a live response — api.manifold.markets isn't reachable
-// from this build environment's network sandbox. `probChanges` (the
-// {day, week, month} delta object used below) is based on documented and
-// observed Manifold API behavior, not a live-verified response. The code
-// is written defensively: any market missing a usable probChanges value is
-// skipped entirely rather than guessed at (see pickBestManifoldWindow).
-// Before trusting this in production, confirm the actual response shape of
-// `GET https://api.manifold.markets/v0/search-markets?...` and adjust field
-// names here if anything doesn't match.
+// FIELD SHAPE — verified against a live response on 2026-07-25 via
+// `GET /v0/search-markets?...&limit=1`: the earlier version of this module
+// assumed a `probChanges: {day, week, month}` field for historical price
+// deltas. That field does NOT exist on this endpoint's response — confirmed
+// against real data, not a guess. There is also no `groupSlugs` field on
+// this response shape, so category classification for Manifold falls back
+// to question-text keyword matching every time in practice (see
+// classifyManifoldCategory), not primarily group-slug matching as originally
+// designed.
+//
+// Since Manifold's public API doesn't expose a ready-made price-change
+// field, changePct is computed by diffing each market's probability against
+// what was observed on this server's *previous* fetch cycle (a module-level
+// in-memory map, keyed by market ID) — the same snapshot-to-snapshot idea
+// Kalshi's "latest tick" already uses here, just at our own ~3-minute poll
+// interval rather than trade-to-trade. Practical consequences:
+//   - A market contributes no changePct on the first cycle it's ever seen
+//     (nothing to diff against yet) — after a server restart, Manifold
+//     will show zero movers for the first ~3 minutes, then populate from
+//     the second cache refresh onward.
+//   - The window value reuses Kalshi's "latest tick" label on purpose: it
+//     gets the same UI badge (client's isInstantTick()) and the same
+//     INSTANT_TICK_DISCOUNT treatment in rankScore()'s ranking formula,
+//     which is honestly appropriate here too — a poll-to-poll snapshot
+//     diff is not a rigorous historical window either.
 // ---------------------------------------------------------------------------
-
-interface ManifoldProbChanges {
-  day?: number;
-  week?: number;
-  month?: number;
-}
 
 interface ManifoldMarket {
   id: string;
@@ -48,35 +52,49 @@ interface ManifoldMarket {
   uniqueBettorCount?: number;
   closeTime?: number; // epoch ms
   isResolved?: boolean;
-  groupSlugs?: string[];
-  probChanges?: ManifoldProbChanges;
+  groupSlugs?: string[]; // not present on the /v0/search-markets shape observed live; kept optional in case other endpoints/environments differ
+  token?: string; // "MANA" (play-money) or "CASH" (real-money) — confirmed present on live response
 }
 
-function pickBestManifoldWindow(m: ManifoldMarket): { changePct: number; window: string } | null {
-  const changes = m.probChanges;
-  if (!changes) return null;
+// Module-level state persisting across fetch cycles within this server
+// process (same pattern as the movers cache in ./markets.ts) — this is what
+// makes the poll-to-poll diff possible without Manifold providing history.
+const previousProbabilities = new Map<string, { probability: number; timestamp: number }>();
 
-  const windows: Array<[number | undefined, string]> = [
-    [changes.day, "24h"],
-    [changes.week, "7d"],
-    [changes.month, "30d"],
-  ];
-  let best: { changePct: number; window: string } | null = null;
-  for (const [val, label] of windows) {
-    if (typeof val === "number" && !Number.isNaN(val) && val !== 0) {
-      const pct = val * 100; // assumed fractional (0-1 scale), matching Polymarket's price-change field convention — unverified, see module header
-      if (!best || Math.abs(pct) > Math.abs(best.changePct)) {
-        best = { changePct: pct, window: label };
-      }
-    }
-  }
-  return best;
+const MIN_POLL_GAP_MS = 60 * 1000; // ignore diffs from implausibly short gaps (e.g. a manual force-refresh moments after the last one)
+const PREVIOUS_PROBABILITY_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+// Bounds memory growth as the set of "currently trending on Manifold"
+// markets shifts over a long-running server process — anything not seen in
+// 2 hours has fallen well out of the volume-sorted window we fetch anyway.
+function prunePreviousProbabilities() {
+  const cutoff = Date.now() - PREVIOUS_PROBABILITY_TTL_MS;
+  previousProbabilities.forEach((entry, id) => {
+    if (entry.timestamp < cutoff) previousProbabilities.delete(id);
+  });
 }
 
-// Manifold's "group" (topic) slugs are the closest thing to a native
-// category — tried first via the shared keyword matcher, same pattern as
-// Polymarket's tags. Falls back to the market question text if no group
-// slug yields a confident match.
+function computeManifoldChange(id: string, currentProbabilityFraction: number): { changePct: number; window: string } | null {
+  const now = Date.now();
+  const previous = previousProbabilities.get(id);
+  previousProbabilities.set(id, { probability: currentProbabilityFraction, timestamp: now });
+
+  if (!previous) return null; // first time seeing this market this server run
+  const elapsedMs = now - previous.timestamp;
+  if (elapsedMs < MIN_POLL_GAP_MS) return null;
+
+  const changePct = (currentProbabilityFraction - previous.probability) * 100;
+  if (changePct === 0) return null;
+
+  return { changePct, window: "latest tick" };
+}
+
+// Manifold's "group" (topic) slugs would be the closest thing to a native
+// category, tried first via the shared keyword matcher (same pattern as
+// Polymarket's tags) — but the live /v0/search-markets response has no
+// groupSlugs field (see module header), so in practice this always falls
+// through to question-text keyword matching. Left in place in case a
+// different Manifold endpoint or response variant does include it.
 function classifyManifoldCategory(groupSlugs: string[] | undefined, question: string): Category {
   for (const slug of groupSlugs ?? []) {
     const match = classifyKeywords(slug.replace(/-/g, " "));
@@ -128,12 +146,15 @@ function buildManifoldHeadline(
 }
 
 // Mirrors the client's formatVolume, but prefixed as Mana (M$) rather than
-// USD ($) — this string gets embedded directly in generated body text, so
-// the distinction has to be explicit here, not left to UI styling alone.
-function formatMana(v: number): string {
-  if (v >= 1_000_000) return `M$${(v / 1_000_000).toFixed(1)}M`;
-  if (v >= 1_000) return `M$${(v / 1_000).toFixed(0)}K`;
-  return `M$${v.toFixed(0)}`;
+// USD ($) for play-money markets — this string gets embedded directly in
+// generated body text, so the distinction has to be explicit here, not left
+// to UI styling alone. Manifold's rare CASH-token markets use real USD, so
+// those get the normal "$" prefix instead.
+function formatManifoldVolume(v: number, isPlayMoney: boolean): string {
+  const prefix = isPlayMoney ? "M$" : "$";
+  if (v >= 1_000_000) return `${prefix}${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${prefix}${(v / 1_000).toFixed(0)}K`;
+  return `${prefix}${v.toFixed(0)}`;
 }
 
 function timeToResolution(closeTimeMs: number | null | undefined): string {
@@ -157,21 +178,33 @@ function templatedManifoldBody(params: {
   uniqueBettorCount?: number;
   closeTime?: number | null;
   window: string;
+  isPlayMoney: boolean;
 }): string {
-  const { title, currentProbability, changePct, direction, volume, uniqueBettorCount, closeTime, window } =
-    params;
+  const {
+    title,
+    currentProbability,
+    changePct,
+    direction,
+    volume,
+    uniqueBettorCount,
+    closeTime,
+    window,
+    isPlayMoney,
+  } = params;
   const dir = direction === "up" ? "risen" : "fallen";
   const magnitude = Math.abs(changePct).toFixed(1);
   const bettorClause = uniqueBettorCount ? ` from ${uniqueBettorCount} traders` : "";
   const resolution = timeToResolution(closeTime);
+  const currencyNote = isPlayMoney
+    ? " Manifold uses play-money (Mana), not real currency — prices still reflect aggregated trader belief, but nothing is staked financially."
+    : " This is one of Manifold's real-money markets (settled in USD), unlike most Manifold markets which use play-money Mana.";
 
-  return `Traders on Manifold — a play-money prediction market — have pushed the probability of "${title}" ${dir} by ${magnitude} percentage points over the past ${windowLabel(
-    window
-  )}, with the market now pricing this outcome at ${currentProbability.toFixed(
+  return `Traders on Manifold have pushed the probability of "${title}" ${dir} by ${magnitude} percentage points since the last check, with the market now pricing this outcome at ${currentProbability.toFixed(
     0
-  )}%. The move came alongside ${formatMana(
-    volume
-  )} in 24-hour trading activity${bettorClause}. Manifold uses play-money (Mana), not real currency — prices still reflect aggregated trader belief, but nothing is staked financially. The market is scheduled to resolve ${resolution}.`;
+  )}%. The move came alongside ${formatManifoldVolume(
+    volume,
+    isPlayMoney
+  )} in 24-hour trading activity${bettorClause}.${currencyNote} The market is scheduled to resolve ${resolution}.`;
 }
 
 // search-markets page size/pagination behavior wasn't verified live (see
@@ -183,6 +216,8 @@ const MANIFOLD_MAX_PAGES = 5;
 export async function fetchManifold(): Promise<MarketMove[]> {
   const baseUrl = "https://api.manifold.markets/v0/search-markets";
   const moves: MarketMove[] = [];
+
+  prunePreviousProbabilities();
 
   for (let page = 0; page < MANIFOLD_MAX_PAGES; page++) {
     const offset = page * MANIFOLD_PAGE_SIZE;
@@ -206,14 +241,15 @@ export async function fetchManifold(): Promise<MarketMove[]> {
         if (m.outcomeType !== "BINARY") continue;
         if (typeof m.probability !== "number") continue;
 
-        const best = pickBestManifoldWindow(m);
-        if (!best) continue; // no usable probChanges data — see field-verification caveat above
+        const best = computeManifoldChange(m.id, m.probability);
+        if (!best) continue; // no prior snapshot yet, or too soon since the last one — see module header
 
         const currentProbability = m.probability * 100;
         const direction: "up" | "down" = best.changePct >= 0 ? "up" : "down";
         const volume = m.volume24Hours ?? 0;
         const liquidity = m.totalLiquidity ?? undefined;
         const category = classifyManifoldCategory(m.groupSlugs, m.question);
+        const isPlayMoney = m.token !== "CASH";
 
         const body = templatedManifoldBody({
           title: m.question,
@@ -224,6 +260,7 @@ export async function fetchManifold(): Promise<MarketMove[]> {
           uniqueBettorCount: m.uniqueBettorCount,
           closeTime: m.closeTime,
           window: best.window,
+          isPlayMoney,
         });
 
         moves.push({
@@ -242,7 +279,7 @@ export async function fetchManifold(): Promise<MarketMove[]> {
           image: null,
           body,
           bodySource: "generated" as const,
-          isPlayMoney: true,
+          isPlayMoney,
           endDate: m.closeTime ? new Date(m.closeTime).toISOString() : null,
           updatedAt: new Date().toISOString(),
         });

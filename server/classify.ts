@@ -20,7 +20,7 @@ const CATEGORY_KEYWORD_RULES: Array<{ category: Category; keywords: RegExp }> = 
   {
     category: "Politics",
     keywords:
-      /\b(elections?|president|senate|congress|governor|mayor|vote|poll|democrat|republican|gop|impeach|nominee|primary|shutdown|legislation|supreme court|cabinet|prime minister|parliament|referendum|policy|white house|administration|geopolitic|war in|ceasefire|sanctions|nato|trump|biden|harris|putin|zelensky|xi jinping|politics)\b/i,
+      /\b(elections?|president|senate|congress|governor|mayor|vote|poll|democrat|republican|gop|impeach|nominee|primary|shutdown|legislation|supreme court|scotus|cabinet|prime minister|parliament|referendum|policy|white house|administration|geopolitic|war in|ceasefire|sanctions|nato|trump|biden|harris|putin|zelensky|xi jinping|politics)\b/i,
   },
   {
     category: "Sports",
